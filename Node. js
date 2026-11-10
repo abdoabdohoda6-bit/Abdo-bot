@@ -1,0 +1,132 @@
+// index.js - بوت Abdo___HD 🥷🔱 | Baileys Latest
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
+const P = require('pino');
+const fs = require('fs');
+const config = require('./config');
+const { containsBadWord, containsLink } = require('./filters');
+
+const PREFIX = process.env.PREFIX || "!";
+let mutedGroups = new Set(); // قروبات في وضع الصمت
+let mutedUsers = new Map(); // تكتم فردي
+
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState('./auth');
+  const sock = makeWASocket({
+    auth: state,
+    logger: P({ level: 'silent' }),
+    printQRInTerminal: true,
+    browser: ["Abdo_HD Bot", "Chrome", "1.0"]
+  });
+
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+    if (connection === 'close') {
+      const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+      if (shouldReconnect) startBot();
+    } else if (connection === 'open') {
+      console.log('✅ بوت Abdo___HD خدام دابا 🥷🔱');
+    }
+  });
+
+  // ترحيب و طرد تلقائي
+  sock.ev.on('group-participants.update', async ({ id, participants, action }) => {
+    if (action === 'add') {
+      for (let p of participants) {
+        await sock.sendMessage(id, { text: config.WELCOME_MSG.replace('{user}', '@' + p.split('@')[0]), mentions: [p] });
+      }
+    }
+  });
+
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const msg = messages[0];
+    if (!msg.message || msg.key.fromMe) return;
+    const jid = msg.key.remoteJid!;
+    const isGroup = jid.endsWith('@g.us');
+    const sender = msg.key.participant || jid;
+    const senderNumber = sender.split('@')[0].replace('212','0');
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
+
+    const isDev = config.DEVS.includes(senderNumber) || config.DEVS.includes('0'+senderNumber) || config.ADMINS_JID.includes(sender);
+    
+    // وضع الصمت
+    if (mutedGroups.has(jid) && !isDev) return;
+    if (mutedUsers.has(sender+'_'+jid)) return;
+
+    // 1. منع الروابط - طرد تلقائي
+    if (isGroup && containsLink(text) && !isDev) {
+      await sock.sendMessage(jid, { delete: msg.key });
+      await sock.sendMessage(jid, { text: `🚫 @${sender.split('@')[0]} ممنوع الروابط! تم الطرد تلقائيا 🥷`, mentions: [sender] });
+      await sock.groupParticipantsUpdate(jid, [sender], "remove");
+      return;
+    }
+
+    // 2. فلتر الكلمات الخايبة - حذف + طرد
+    if (containsBadWord(text) && !isDev) {
+      await sock.sendMessage(jid, { delete: msg.key });
+      if (text.length > 15) { // إذا طول فالسب
+        await sock.groupParticipantsUpdate(jid, [sender], "remove");
+        await sock.sendMessage(jid, { text: `⚠️ تم طرد @${sender.split('@')[0]} بسبب كلام خايب`, mentions: [sender] });
+      }
+      return;
+    }
+
+    // 3. منع الملصقات المخالفة
+    if (msg.message.stickerMessage && !isDev) {
+      // هنا تقدر تزيد فحص بالـ AI أو حذف مباشر للملصقات المشبوهة
+      // مؤقتا: نخليو المطورين فقط يصيفطو ستيكر
+      // await sock.sendMessage(jid, { delete: msg.key });
+    }
+
+    if (!text.startsWith(PREFIX)) return;
+    const [cmd, ...args] = text.slice(1).trim().split(/\s+/);
+    
+    // أوامر المطورين فقط
+    const needDev = ["تكتم","صمت","اطلق","ترحيب"].includes(cmd);
+    if (needDev && !isDev) return sock.sendMessage(jid, { text: "❌ هاد الأمر للمطورين فقط Abdo و sanfoura" });
+
+    switch(cmd) {
+      case "تكتم":
+        const target = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || msg.message.extendedTextMessage?.contextInfo?.participant;
+        if (target) { mutedUsers.set(target+'_'+jid, true); await sock.sendMessage(jid, { text: `🔇 تم تكتم @${target.split('@')[0]}`, mentions:[target] });}
+        break;
+      case "صمت":
+        mutedGroups.add(jid);
+        await sock.sendMessage(jid, { text: "🤫 تم تفعيل وضع الصمت - البوت بوحدو لي غيهضر دابا" });
+        break;
+      case "اطلق":
+        if (args[0]==="الكل") { mutedGroups.delete(jid); mutedUsers.clear(); }
+        else {
+          const t = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+          if (t) mutedUsers.delete(t+'_'+jid); else mutedGroups.delete(jid);
+        }
+        await sock.sendMessage(jid, { text: "🔊 تم إطلاق الكلام 🫦" });
+        break;
+      case "صورة":
+        if (args[0]?.includes("Abdo") || text.includes("المطور")) {
+          await sock.sendMessage(jid, { image: fs.readFileSync(config.DEV_IMAGES.abdo), caption: "👑 المطور Abdo___HD 🥷🔱\n0750649595" });
+        } else if (text.includes("sanfoura")) {
+          await sock.sendMessage(jid, { image: fs.readFileSync(config.DEV_IMAGES.sanfoura), caption: "🫦🦋 المطورة sanfoura___HD - راكبة الـ MT-07" });
+        }
+        break;
+      case "ترحيب":
+        await sock.sendMessage(jid, { text: config.WELCOME_MSG.replace('{user}', 'الكل'), mentions: [] });
+        break;
+      case "اوامر":
+        await sock.sendMessage(jid, { text: `
+🤖 أوامر بوت Abdo___HD 🥷🔱
+!تكتم @شخص - تكتم شخص
+!صمت - تسكت القروب كامل
+!اطلق - ترجع الهضرة
+!صورة المطور - صورة Abdo
+!صورة sanfoura - صورة sanfoura
+!ترحيب - رسالة ترحيب
+⚠️ مانع الروابط + مانع السب خدام تلقائيا
+` });
+        break;
+    }
+  });
+}
+
+startBot();
